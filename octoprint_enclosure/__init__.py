@@ -22,6 +22,7 @@ import threading
 import json
 import copy
 from smbus2 import SMBus
+from .getPiTemp import PiTemp
 import struct
 
 
@@ -30,7 +31,7 @@ def PinState_Boolean(pin, ActiveLow) :
     try:
         state = GPIO.input(pin)
         if ActiveLow and not state: return True
-        if not ActiveLow and state: return True 
+        if not ActiveLow and state: return True
         return False
     except:
         return "ERROR: Unable to read pin"
@@ -40,7 +41,7 @@ def PinState_Human(pin, ActiveLow):
     PinState = PinState_Boolean(pin, ActiveLow)
     if PinState == True :
         return " ON "
-    elif PinState == False:		
+    elif PinState == False:
         return " OFF "
     else:
         return PinState
@@ -53,7 +54,7 @@ def CheckInputActiveLow(Input_Pull_Resistor):
         return True
     else:
         return False
-        
+
 class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplatePlugin, octoprint.plugin.SettingsPlugin,
                       octoprint.plugin.AssetPlugin, octoprint.plugin.BlueprintPlugin,
                       octoprint.plugin.EventHandlerPlugin):
@@ -71,7 +72,15 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
     development_mode = False
     dummy_value = 30.0
     dummy_delta = 0.5
-
+    
+    def __init__(self):
+        # mqtt helper
+        self.mqtt_publish = lambda *args, **kwargs: None
+        # hardcoded
+        self.mqtt_root_topic = "octoprint/plugins/enclosure"
+        self.mqtt_sensor_topic = self.mqtt_root_topic + "/" + "enclosure"
+        self.mqtt_message = "{\"temperature\": 0, \"humidity\": 0}"
+  
     def start_timer(self):
         """
         Function to start timer that checks enclosure temperature
@@ -133,7 +142,15 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         return -1
 
     # ~~ StartupPlugin mixin
-    def on_after_startup(self):
+    def on_after_startup(self):   
+        helpers = self._plugin_manager.get_helpers("mqtt", "mqtt_publish", "mqtt_subscribe", "mqtt_unsubscribe")
+        
+        if helpers:
+            if "mqtt_publish" in helpers:
+                self.mqtt_publish = helpers["mqtt_publish"]
+        else:
+            self._logger.info("mqtt helpers not found. mqtt functions won't work")       
+        
         self.pwm_instances = []
         self.event_queue = []
         self.rpi_outputs_not_changed = []
@@ -150,7 +167,7 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         self.print_complete = False
 
     def get_settings_version(self):
-        return 8
+        return 10
 
     def on_settings_migrate(self, target, current=None):
         self._logger.warn("######### current settings version %s target settings version %s #########", current, target)
@@ -158,9 +175,10 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         self._logger.info("rpi_outputs: %s", self.rpi_outputs)
         self._logger.info("rpi_inputs: %s", self.rpi_inputs)
         self._logger.info("#########        End Current Settings        #########")
-        if current >= 4 and target == 8:
-            self._logger.warn("######### migrating settings to v8 #########")
+        if current >= 4 and target == 10:
+            self._logger.warn("######### migrating settings to v10 #########")
             old_outputs = self._settings.get(["rpi_outputs"])
+            old_inputs = self._settings.get(["rpi_inputs"])
             for rpi_output in old_outputs:
                 if 'shutdown_on_failed' not in rpi_output:
                     rpi_output['shutdown_on_failed'] = False
@@ -180,6 +198,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     rpi_output['gpio_i2c_data_off'] = 0
                 if 'gpio_i2c_register_status' not in rpi_output:
                     rpi_output['gpio_i2c_register_status'] = 1
+                if 'shutdown_on_error' not in rpi_output:
+                        rpi_output['shutdown_on_error'] = False
             self._settings.set(["rpi_outputs"], old_outputs)
 
             old_inputs = self._settings.get(["rpi_inputs"])
@@ -190,6 +210,10 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     rpi_input['temp_i2c_address'] = 1
                 if 'temp_i2c_register' not in rpi_input:
                     rpi_input['temp_i2c_register'] = 1
+                if 'show_graph_temp' not in rpi_input:
+                    rpi_input['show_graph_temp'] = False
+                if 'show_graph_humidity' not in rpi_input:
+                    rpi_input['show_graph_humidity'] = False
             self._settings.set(["rpi_inputs"], old_inputs)
         else:
             self._logger.warn("######### settings not compatible #########")
@@ -800,18 +824,21 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         try:
             sensor_data = []
             for sensor in list(filter(lambda item: item['input_type'] == 'temperature_sensor', self.rpi_inputs)):
-                temp, hum = self.get_sensor_data(sensor)
+                temp, hum, airquality = self.get_sensor_data(sensor)
                 if  self._settings.get(["debug_temperature_log"]) is True:
-                    self._logger.debug("Sensor %s Temperature: %s humidity %s", sensor['label'], temp, hum)
-                if temp is not None and hum is not None:
+                    self._logger.debug("Sensor %s Temperature: %s humidity %s Airquality %s", sensor['label'], temp, hum, airquality)
+                if temp is not None and hum is not None and airquality is not None:
                     sensor["temp_sensor_temp"] = temp
                     sensor["temp_sensor_humidity"] = hum
-                    sensor_data.append(dict(index_id=sensor['index_id'], temperature=temp, humidity=hum))
+                    sensor_data.append(dict(index_id=sensor['index_id'], temperature=temp, humidity=hum, airquality=airquality))
                     self.temperature_sensor_data = sensor_data
                     self.handle_temp_hum_control()
                     self.handle_temperature_events()
                     self.handle_pwm_linked_temperature()
                     self.update_ui()
+                    self.mqtt_sensor_topic = self.mqtt_root_topic + "/" + sensor['label']
+                    self.mqtt_message = {"temperature":  temp, "humidity": hum}
+                    self.mqtt_publish(self.mqtt_sensor_topic, self.mqtt_message)
         except Exception as ex:
             self.log_error(ex)
 
@@ -970,44 +997,66 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
     def get_sensor_data(self, sensor):
         try:
             if self.development_mode:
-                temp, hum = self.read_dummy_temp()
+                temp, hum, airquality = self.read_dummy_temp()
             else:
                 if sensor['temp_sensor_type'] in ["11", "22", "2302"]:
                     temp, hum = self.read_dht_temp(sensor['temp_sensor_type'], sensor['gpio_pin'])
+                    airquality = 0
+                elif sensor['temp_sensor_type'] == "20":
+                    temp, hum = self.read_dht20_temp(sensor['temp_sensor_address'], sensor['temp_sensor_i2cbus'])
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "18b20":
                     temp = self.read_18b20_temp(sensor['ds18b20_serial'])
                     hum = 0
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "bme280":
                     temp, hum = self.read_bme280_temp(sensor['temp_sensor_address'])
+                    airquality = 0
+                elif sensor['temp_sensor_type'] == "bme680":
+                    temp, hum, airquality = self.read_bme680_temp(sensor['temp_sensor_address'])
                 elif sensor['temp_sensor_type'] == "am2320":
                     temp, hum = self.read_am2320_temp() # sensor has fixed address
+                    airquality = 0
+                elif sensor['temp_sensor_type'] == "aht10":
+                    temp, hum = self.read_aht10_temp(sensor['temp_sensor_address'], sensor['temp_sensor_i2cbus'])
+                    airquality = 0
+                elif sensor['temp_sensor_type'] == "rpi":
+                    temp = self.read_rpi_temp() # rpi CPU Temp
+                    hum = 0
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "si7021":
                     temp, hum = self.read_si7021_temp(sensor['temp_sensor_address'], sensor['temp_sensor_i2cbus'])
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "tmp102":
                     temp = self.read_tmp102_temp(sensor['temp_sensor_address'])
                     hum = 0
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "max31855":
                     temp = self.read_max31855_temp(sensor['temp_sensor_address'])
                     hum = 0
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "mcp9808":
-                    temp = self.read_mcp_temp(sensor['temp_sensor_address'])
+                    temp = self.read_mcp_temp(sensor['temp_sensor_address'], sensor['temp_sensor_i2cbus'])
                     hum = 0
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "temp_raw_i2c":
-                    temp = self.read_raw_i2c_temp(sensor)
-                    hum = 0
+                    temp, hum = self.read_raw_i2c_temp(sensor)
+                    airquality = 0
                 elif sensor['temp_sensor_type'] == "hum_raw_i2c":
-                    temp = 0
-                    hum = self.read_raw_i2c_temp(sensor)
+                    hum, temp = self.read_raw_i2c_temp(sensor)
+                    airquality = 0
                 else:
                     self._logger.info("temp_sensor_type no match")
                     temp = None
                     hum = None
-            if temp != -1 and hum != -1:
+                    airquality = 0
+            if temp != -1 and hum != -1 and airquality != -1:
                 temp = round(self.to_float(temp), 1) if not sensor['use_fahrenheit'] else round(
                     self.to_float(temp) * 1.8 + 32, 1)
                 hum = round(self.to_float(hum), 1)
-                return temp, hum
-            return None, None
+                airquality = round(self.to_float(airquality), 1)
+                return temp, hum, airquality
+            return None, None, None
         except Exception as ex:
             self.log_error(ex)
 
@@ -1044,7 +1093,7 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
 
         self.dummy_value = return_value
 
-        return return_value, return_value
+        return return_value, return_value, return_value
 
     def read_raw_i2c_temp(self, sensor):
         try:
@@ -1053,14 +1102,18 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             i2creg = self.to_int(sensor['temp_i2c_register'])
 
             with SMBus(i2cbus) as bus:
-                data = bus.read_i2c_block_data(i2caddr, i2creg, 4)
-                val = struct.unpack('f', bytearray(data))
-                fval = val[0]
+                data = bus.read_i2c_block_data(i2caddr, i2creg, 8)
+                fval1 = struct.unpack('f', bytearray(data[0:4]))[0]
+                if fval1 != fval1:
+                    fval1 = 0
+                fval2 = struct.unpack('f', bytearray(data[4:8]))[0]
+                if fval2 != fval2:
+                    fval2 = 0
+                
+                self._logger.debug("read_raw_i2c_temp(i2cbus=%s, i2caddr=%s, i2creg=%s) data == %s (%s, %s)",
+                                    i2cbus, i2caddr, i2creg, data, fval1, fval2)
 
-                self._logger.debug("read_raw_i2c_temp(i2cbus=%s, i2caddr=%s, i2creg=%s) data == %s (%s)",
-                                    i2cbus, i2caddr, i2creg, data, fval)
-
-                return str(fval)
+                return (fval1, fval2)
 
         except Exception as ex:
             template = "An exception of type {0} occurred on {1} when reading on i2c address {2}, reg {3}. Arguments:\n{4!r}"
@@ -1068,10 +1121,10 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             self._logger.warn(message)
             return str(-1)
 
-    def read_mcp_temp(self, address):
+    def read_mcp_temp(self, address, i2cbus):
         try:
             script = os.path.dirname(os.path.realpath(__file__)) + "/mcp9808.py"
-            args = ["python", script, str(address)]
+            args = ["python", script, str(i2cbus), str(address)]
             if self._settings.get(["debug_temperature_log"]) is True:
                 self._logger.debug("Temperature MCP9808 cmd: %s", " ".join(args))
             proc = Popen(args, stdout=PIPE)
@@ -1105,19 +1158,19 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             self.log_error(ex)
             return (0, 0)
 
-    def read_bme280_temp(self, address):
+    def read_dht20_temp(self, address, i2cbus):
         try:
-            script = os.path.dirname(os.path.realpath(__file__)) + "/BME280.py "
+            script = os.path.dirname(os.path.realpath(__file__)) + "/DHT20.py "
             if self._settings.get(["use_sudo"]):
                 sudo_str = "sudo "
             else:
                 sudo_str = ""
-            cmd = sudo_str + "python " + script + str(address)
+            cmd = sudo_str + "python " + script + str(address) + " " + str(i2cbus)
             if  self._settings.get(["debug_temperature_log"]) is True:
-                self._logger.debug("Temperature BME280 cmd: %s", cmd)
+                self._logger.debug("Temperature DHT20 cmd: %s", cmd)
             stdout = (Popen(cmd, shell=True, stdout=PIPE).stdout).read()
             if  self._settings.get(["debug_temperature_log"]) is True:
-                self._logger.debug("BME280 result: %s", stdout)
+                self._logger.debug("DHT20 result: %s", stdout)
             temp, hum = stdout.decode("utf-8").split("|")
             return (self.to_float(temp.strip()), self.to_float(hum.strip()))
         except Exception as ex:
@@ -1125,6 +1178,57 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                 "Failed to execute python scripts, try disabling use SUDO on advanced section of the plugin.")
             self.log_error(ex)
             return (0, 0)
+
+    def read_bme280_temp(self, address):
+        try:
+            script = os.path.dirname(os.path.realpath(__file__)) + "/BME280.py"
+            cmd = [sys.executable, script, str(address)]
+            if self._settings.get(["use_sudo"]):
+                cmd.insert(0, "sudo")
+            if  self._settings.get(["debug_temperature_log"]) is True:
+                self._logger.debug("Temperature BME280 cmd: %s", cmd)
+
+            stdout = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+            output, errors = stdout.communicate()
+
+            if self._settings.get(["debug_temperature_log"]) is True:
+                if len(errors) > 0:
+                    self._logger.error("BME280 error: %s", errors)
+                else:
+                    self._logger.debug("BME280 result: %s", output)
+
+            temp, hum = output.split("|")
+            return (self.to_float(temp.strip()), self.to_float(hum.strip()))
+        except Exception as ex:
+            self._logger.info(
+                "Failed to execute python scripts, try disabling use SUDO on advanced section of the plugin.")
+            self.log_error(ex)
+            return (0, 0)
+
+    def read_bme680_temp(self, address):
+        try:
+            script = os.path.dirname(os.path.realpath(__file__)) + "/BME680.py"
+            cmd = [sys.executable, script, str(address)]
+            if self._settings.get(["use_sudo"]):
+                cmd.insert(0, "sudo")
+            if  self._settings.get(["debug_temperature_log"]) is True:
+                self._logger.debug("Temperature BME680 cmd: %s", cmd)
+
+            stdout = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+            output, errors = stdout.communicate()
+
+            if  self._settings.get(["debug_temperature_log"]) is True:
+                if len(errors) > 0:
+                    self._logger.error("BME680 error: %s", errors)
+                else:
+                    self._logger.debug("BME680 result: %s", output)
+            temp, hum, airq = output.split("|")
+            return (self.to_float(temp.strip()), self.to_float(hum.strip()), self.to_float(airq.strip()))
+        except Exception as ex:
+            self._logger.info(
+                "Failed to execute python scripts, try disabling use SUDO on advanced section of the plugin.")
+            self.log_error(ex)
+            return (0, 0, 0)
 
     def read_am2320_temp(self):
         try:
@@ -1146,6 +1250,46 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                 "Failed to execute python scripts, try disabling use SUDO on advanced section of the plugin.")
             self.log_error(ex)
             return (0, 0)
+
+    def read_aht10_temp(self, address, i2cbus):
+        try:
+            script = os.path.dirname(os.path.realpath(__file__)) + "/AHT10.py"
+            cmd = [sys.executable, script, str(address), str(i2cbus)]
+            if self._settings.get(["use_sudo"]):
+                 cmd.insert(0, "sudo")
+            if  self._settings.get(["debug_temperature_log"]) is True:
+                self._logger.debug("Temperature AHT10 cmd: %s", cmd)
+            self._logger.debug(cmd)
+            stdout = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+            output, errors = stdout.communicate()
+            if self._settings.get(["debug_temperature_log"]) is True:
+                if len(errors) > 0:
+                    self._logger.error("AHT10 error: %s", errors)
+                else:
+                    self._logger.debug("AHT10 result: %s", output)
+            self._logger.debug(output + " " + errors)
+            temp, hum = output.split("|")
+            print (temp + " , " + hum )
+            return (self.to_float(temp.strip()), self.to_float(hum.strip()))
+        except Exception as ex:
+            print(ex)
+            self._logger.info(
+                "Failed to execute python scripts, try disabling use SUDO on advanced section of the plugin.")
+            self.log_error(ex)
+            return (0, 0)
+
+    def read_rpi_temp(self):
+        try:
+            pitemp = PiTemp()
+            temp = pitemp.getTemp()
+            if  self._settings.get(["debug_temperature_log"]) is True:
+                self._logger.debug("Pi CPU result: %s", temp)
+            return temp
+        except Exception as ex:
+            self._logger.info(
+                "Failed to get pi cpu temperature")
+            self.log_error(ex)
+            return 0
 
     def read_si7021_temp(self, address, i2cbus):
         try:
@@ -1348,7 +1492,7 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
     def log_error(self, ex):
         template = "An exception of type {0} occurred on {1}. Arguments:\n{2!r}"
         message = template.format(type(ex).__name__, inspect.currentframe().f_code.co_name, ex.args)
-        self._logger.warn(message)
+        self._logger.warn(message, exc_info = True)
 
     def setup_gpio(self):
         try:
@@ -1461,6 +1605,16 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                 if (rpi_input['action_type'] == 'printer_control' and rpi_input['printer_action'] != 'filament'):
                     GPIO.add_event_detect(gpio_pin, edge, callback=self.handle_printer_action, bouncetime=200)
                     self._logger.info("Adding PRINTER CONTROL event detect on pin %s with edge: %s", gpio_pin, edge)
+            
+            for rpi_input in list(filter(lambda item: item['input_type'] == 'temperature_sensor', self.rpi_inputs)):
+                gpio_pin = self.to_int(rpi_input['gpio_pin'])
+                if rpi_input['input_pull_resistor'] == 'input_pull_up':
+                    pull_resistor = GPIO.PUD_UP
+                elif rpi_input['input_pull_resistor'] == 'input_pull_down':
+                    pull_resistor = GPIO.PUD_DOWN
+                else:
+                    pull_resistor = GPIO.PUD_OFF
+                GPIO.setup(gpio_pin, GPIO.IN, pull_up_down=pull_resistor)
         except Exception as ex:
             self.log_error(ex)
 
@@ -1800,11 +1954,28 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         if event == Events.PRINT_DONE:
             for notification in self.notifications:
                 if notification['printFinish']:
-                    file_name = os.path.basename(payload["file"])
+                    file_name = os.path.basename(payload["path"])
                     elapsed_time_in_seconds = payload["time"]
                     elapsed_time = octoprint.util.get_formatted_timedelta(timedelta(seconds=elapsed_time_in_seconds))
                     msg = "Print job finished: " + file_name + "finished printing in " + file_name, elapsed_time
                     self.send_notification(msg)
+
+        if event in (Events.ERROR, Events.DISCONNECTED):
+            self._logger.info("Detected Error or Disconnect in %s will call listeners for shutdown_on_error!", event)
+            for rpi_output in self.rpi_outputs:
+                if rpi_output['shutdown_on_error']:
+                    self._logger.debug("Schedule shutdown for: %s", rpi_output["index_id"])
+                    self.schedule_auto_shutdown_outputs(rpi_output, 0)
+            self.run_tasks()
+        
+        if event == Events.PRINTER_STATE_CHANGED:
+            if "error" in payload["state_string"].lower():
+                self._logger.info("Detected Error in %s id: %s state: %s  will call listeners for shutdown_on_error!", event, payload["state_id"], payload["state_string"])
+                for rpi_output in self.rpi_outputs:
+                    if rpi_output['shutdown_on_error']:
+                        self._logger.debug("Schedule shutdown for: %s", rpi_output["index_id"])
+                        self.schedule_auto_shutdown_outputs(rpi_output, 0)
+                self.run_tasks()
 
     def run_tasks(self):
         for task in self.event_queue:
@@ -2118,6 +2289,15 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     comm_instance._log("Setting TEMP/HUM control output %s to value %s" % (index_id, set_value))
                     return
 
+    def get_graph_data(self, comm, parsed_temps):
+        for sensor in list(filter(lambda item: item['input_type'] == 'temperature_sensor', self.rpi_inputs)):
+            if sensor["show_graph_temp"]:
+                parsed_temps[str(sensor["label"])] = (sensor['temp_sensor_temp'], None)
+            if sensor["show_graph_humidity"]:
+                parsed_temps[str(sensor["label"])+" Humidity"] = (sensor['temp_sensor_humidity'], None)
+
+        return parsed_temps
+
 
 __plugin_name__ = "Enclosure Plugin"
 __plugin_pythoncompat__ = ">=2.7,<4"
@@ -2130,5 +2310,6 @@ def __plugin_load__():
     global __plugin_hooks__
     __plugin_hooks__ = {
         "octoprint.comm.protocol.gcode.queuing"       : __plugin_implementation__.hook_gcode_queuing,
-        "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information
+        "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
+        "octoprint.comm.protocol.temperatures.received": (__plugin_implementation__.get_graph_data, 1)
     }

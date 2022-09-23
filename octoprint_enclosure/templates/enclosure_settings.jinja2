@@ -1,10 +1,10 @@
 <h4>{{ _('Raspberry Pi Outputs') }}</h4>
 <p>
   Configure all
-  <strong>outputs</strong>. Outputs can be everything that do actions based on UI button presses or automatic events or alarms.
+  <strong>outputs</strong>. Outputs can be everything that performs actions based on UI button presses, or automatic events or alarms.
 </p>
 <p>
-  Example of possible outputs are gpio pins, neopixel LED's, temperature control or sending gcode to the printer.
+  Example of possible outputs are GPIO pins, neopixel LED's, temperature control or sending gcode to the printer.
 </p>
 <form class="form-horizontal">
   <div data-bind="foreach: settingsViewModel.settings.plugins.enclosure.rpi_outputs">
@@ -91,7 +91,7 @@
       </div>
     </div>
     <!-- /ko -->
-    <!-- ko ifnot: ($data.output_type() == "gcode_output" || $data.output_type() == "temperature_alarm" || $data.output_type() == "shell_output" || $data.output_type() == "ledstrip" || ($data.output_type() == "regular" && $data.gpio_i2c_enabled)) -->
+    <!-- ko ifnot: ($data.output_type() == "gcode_output" || $data.output_type() == "temperature_alarm" || $data.output_type() == "shell_output" || $data.output_type() == "ledstrip" || ($data.output_type() == "regular" && $data.gpio_i2c_enabled())) -->
     <div class="control-group">
       <label class="control-label">{{ _('IO Number') }}</label>
       <div class="controls">
@@ -174,7 +174,7 @@
       <label class="control-label">{{ _('Off Time') }}</label>
       <div class="controls">
         <input type="text" class="input-block-level" data-bind="value: toggle_timer_off">
-        <span class="help-inline">Time in secconds that the GPIO will remain when OFF</span>
+        <span class="help-inline">Time in seconds that the GPIO will remain when OFF</span>
       </div>
     </div>
     <!-- /ko -->
@@ -221,7 +221,7 @@
         <label class="checkbox">
           <input type="checkbox" data-bind="checked: auto_shutdown"> {{ _('Auto Shutdown') }}
         </label>
-        <span class="help-inline">Choose if output should turn off automatomatically when print finishes</span>
+        <span class="help-inline">Choose if output should turn off automatically when print finishes</span>
       </div>
     </div>
     <!-- /ko -->
@@ -231,7 +231,7 @@
         <label class="checkbox">
           <input type="checkbox" data-bind="checked: shutdown_on_failed"> {{ _('Shutdown on Failed or Canceled') }}
         </label>
-        <span class="help-inline">Choose if output should turn off automatomatically when print is canceled or fails</span>
+        <span class="help-inline">Choose if output should turn off automatically when print is canceled or fails</span>
       </div>
     </div>
 
@@ -240,13 +240,23 @@
         <label class="control-label">{{ _('Shutdown Delay / Hour') }}</label>
         <div class="controls">
           <input type="text" class="input-block-level" data-bind="value: shutdown_time">
-          <span class="help-inline">Time delay in secconds to turn on GPIO when print starts OR exact time that the event should happen, note that
+          <span class="help-inline">Time delay in seconds to turn off GPIO when print starts OR exact time that the event should happen, note that
             events will only be scheduled after a print starts, time should be formated as HH:MM on a 24 hours format, don't
             forget to check timezone of your raspberry pi.</span>
           <span class="label label-important">Attention</span>
           <span> Hour schedule does not work with
             <b>Link PWM to Temperature</b> option</span>
         </div>
+      </div>
+    </div>
+    <!-- /ko -->
+    <!-- ko ifnot: ($data.output_type() == "gcode_output" || $data.output_type() == "temperature_alarm" || $data.output_type() == "shell_output") -->
+    <div class="control-group">
+      <div class="controls">
+        <label class="checkbox">
+          <input type="checkbox" data-bind="checked: shutdown_on_error"> {{ _('Auto Shutdown on Serial Connection Error') }}
+        </label>
+        <span class="help-inline">Choose if output should turn off automatically when an error or disconnect was detected. Shutdown Delay will be ignored in this case</span>
       </div>
     </div>
     <!-- /ko -->
@@ -269,12 +279,12 @@
         <label class="checkbox">
           <input type="checkbox" data-bind="checked: gpio_i2c_enabled"> {{ _('GPIO over I2C') }}
         </label>
-        <span class="help-inline">Active low means that the GPIO will turn on when receive a low signal (ground) from Raspberry PI</span>
+        <span class="help-inline">Allows multiple devices to be connected to the same GPIO pins</span>
       </div>
     </div>
     <!-- /ko -->
 
-    <!-- ko if: $data.gpio_i2c_enabled  -->
+    <!-- ko if: $data.gpio_i2c_enabled()  -->
     <div class="control-group">
       <label class="control-label" for="settings-enclosure-gpio-i2c-bus">{{ _('I2C Bus') }}</label>
       <div class="controls">
@@ -594,14 +604,18 @@
           <select data-bind="value: temp_sensor_type">
             <option value="">Select Sensor</option>
             <option value="11">DHT11</option>
+	    <option value="20">DHT20</option>
             <option value="22">DHT22</option>
             <option value="2302">AM2302</option>
             <option value="18b20">DS18B20</option>
             <option value="si7021">SI7021</option>
             <option value="bme280">BME280</option>
+            <option value="bme680">BME680</option>
             <option value="am2320">AM2320</option>
+            <option value="aht10">AHT10</option>
             <option value="tmp102">TMP102</option>
             <option value="max31855">MAX31855</option>
+            <option value="rpi">Raspberry Pi CPU</option>
             <option value="mcp9808">MCP9808</option>
             <option value="temp_raw_i2c">Raw I2C Temperature</option>
             <option value="hum_raw_i2c">Raw I2C Humidity</option>
@@ -649,6 +663,16 @@
           <span class="help-inline">GPIO pin for temperature sensor, recommended to use 4 as DS18B20 has default support to pin #4 (BCM)</span>
         </div>
       </div>
+      <div class"control-group">
+        <label class="control-label" for="settings-enclosure-dhtPin">{{ _('Input Pull Resistor') }}</label>
+        <div class="controls">
+          <select data-bind="value: input_pull_resistor">
+            <option value="" selected="selected">None</option>
+            <option value="input_pull_up">Input Pullup</option>
+          </select>
+          <span class="help-inline">Whether to enable the built-in pullup for this temperature sensor. If set, then no external pullup is needed.</span>
+        </div>
+      </div>
       <div class="control-group">
         <label class="control-label" for="settings-enclosure-dhtPin">{{ _('DS18B20 Serial') }}</label>
         <div class="controls">
@@ -658,7 +682,7 @@
         </div>
       </div>
       <!-- /ko -->
-      <!-- ko if: ($data.temp_sensor_type() == "si7021") || ($data.temp_sensor_type() == "bme280") || ($data.temp_sensor_type() == "am2320") || ($data.temp_sensor_type() == "tmp102") || ($data.temp_sensor_type() == "mcp9808") -->
+      <!-- ko if: ($data.temp_sensor_type() == "si7021") || ($data.temp_sensor_type() == "20") || ($data.temp_sensor_type() == "bme280") || ($data.temp_sensor_type() == "am2320") || ($data.temp_sensor_type() == "aht10") || ($data.temp_sensor_type() == "tmp102") || ($data.temp_sensor_type() == "mcp9808") -->
       <div class="control-group">
         <label class="control-label" for="settings-enclosure-dhtPin">{{ _('Sensor Pin') }}</label>
         <div class="controls">
@@ -708,7 +732,7 @@
       </div>
       
       <!-- /ko -->
-      <!-- ko ifnot: ($data.temp_sensor_type() == "18b20") || ($data.temp_sensor_type() == "si7021") || ($data.temp_sensor_type() == "bme280") || ($data.temp_sensor_type() == "am2320") || ($data.temp_sensor_type() == "tmp102") || ($data.temp_sensor_type() == "max31855") || ($data.temp_sensor_type() == "mcp9808") || ($data.temp_sensor_type() == "temp_raw_i2c")  || ($data.temp_sensor_type() == "hum_raw_i2c") -->
+      <!-- ko ifnot: ($data.temp_sensor_type() == "rpi") || ($data.temp_sensor_type() == "18b20") || ($data.temp_sensor_type() == "si7021") || ($data.temp_sensor_type() == "bme280") || ($data.temp_sensor_type() == "am2320") || ($data.temp_sensor_type() == "tmp102") || ($data.temp_sensor_type() == "max31855") || ($data.temp_sensor_type() == "mcp9808") || ($data.temp_sensor_type() == "temp_raw_i2c")  || ($data.temp_sensor_type() == "hum_raw_i2c") -->
       <div class="control-group">
         <label class="control-label" for="settings-enclosure-dhtPin">{{ _('Sensor Pin') }}</label>
         <div class="controls">
@@ -773,7 +797,7 @@
             <option value="input_pull_up">Input Pullup</option>
             <option value="input_pull_down">Input Pulldown</option>
           </select>
-          <span class="help-inline">Choose what type of pull resistors that you want on the output. If you signal is active low, that means it should
+          <span class="help-inline">Choose what type of pull resistors that you want on the output. If your signal is active low, that means it should
             run the action when receive a low signal (ground), you should choose PULL UP resistors.</span>
         </div>
       </div>
@@ -784,8 +808,8 @@
             <option value="rise">Rise</option>
             <option value="fall">Fall</option>
           </select>
-          <span class="help-inline">Do you want thrigger the event on the rise or falling edge? If you signal is active low, that means it should run
-            the action when receive a low signal (ground), you should choose FALLING EDGE.</span>
+          <span class="help-inline">Do you want to trigger the event on the rise or falling edge? If you signal is active low, that means it should run
+            the action when it receives a low signal (ground), you should choose FALLING EDGE.</span>
         </div>
       </div>
     </div>
@@ -796,7 +820,7 @@
         <select data-bind="options: $root.settings_possible_outputs, optionsText: 'label',
                 optionsValue: 'index_id', value: $data.controlled_io">
         </select>
-        <span class="help-inline">When the event happen, you want control which OUTPUT?</span>
+        <span class="help-inline">When the event happens, do you want control of which OUTPUT?</span>
       </div>
     </div>
     <!-- ko if: ($root.isRegularOutput($data.controlled_io()))  -->
@@ -808,7 +832,8 @@
           <option value="high">High</option>
           <option value="toggle">Toggle</option>
         </select>
-        <span class="help-inline">When the event happen, you want to turn the controlled IO HIGH or LOW?</span>
+        <span class="help-inline">When the event happens, do you want to turn the controlled IO HIGH or LOW?</span>
+
       </div>
     </div>
     <!-- /ko -->
@@ -858,6 +883,24 @@
           <input type="checkbox" data-bind="checked: temp_sensor_navbar"> {{ _('Show temperature on navbar') }}
         </label>
         <span class="help-inline">Enable and disable temperature on navbar</span>
+      </div>
+      <div class="controls">
+		    <label class="checkbox">
+				  <input type="checkbox" data-bind="checked: show_graph_temp"> {{ _('Show temperature in graph') }}
+			  </label>
+			  <span class="help-inline">Enable to show temperature in temperature graph, when a printer is connected.
+        <!-- ko if: ($data.show_graph_temp())  -->
+        <p><i><strong>Note:</strong>This feature currently requires a custom graph plugin like <a href="https://github.com/jneilliii/OctoPrint-PlotlyTempGraph" target="_blank">PlotlyTempGraph</a></i></span></p>
+        <!-- /ko -->
+		  </div>
+      <div class="controls">
+        <label class="checkbox">
+          <input type="checkbox" data-bind="checked: show_graph_humidity"> {{ _('Show humidity in graph') }}
+        </label>
+        <span class="help-inline">Enable to show humidity in temperature graph, when a printer is connected.
+        <!-- ko if: ($data.show_graph_humidity())  -->
+        <p><i><strong>Note:</strong>This feature currently requires a custom graph plugin like <a href="https://github.com/jneilliii/OctoPrint-PlotlyTempGraph" target="_blank">PlotlyTempGraph</a></i></span></p>
+        <!-- /ko -->
       </div>
     </div>
     <!-- /ko -->
@@ -947,7 +990,7 @@
         <div class="controls">
           <textarea rows="4" class="block" data-bind="value: settingsViewModel.settings.plugins.enclosure.filament_sensor_gcode"></textarea>
           <span class="help-inline">GCODE that will be sent to the printer to pause and allow filament to be changed. You should add
-            <code>ENTER</code> on the end of every line sent to the printer</span>
+            <code>ENTER</code> to the end of every line sent to the printer</span>
         </div>
       </div>
 
